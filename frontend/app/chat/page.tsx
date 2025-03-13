@@ -11,6 +11,7 @@ import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { UserList } from '@/components/user-list';
 import { Loader2 } from 'lucide-react';
 import type { Message, ChatRoom, User } from '@/types/socket';
+import { MessageInput } from '@/components/message-input';
 
 export default function ChatPage() {
   const { data: session, status } = useSession();
@@ -164,11 +165,9 @@ export default function ChatPage() {
     }
   };
 
-  const handleSendMessage = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!newMessage.trim() || !socket || !activeRoom) {
+  const handleSendMessage = (content: string, type: 'text' | 'gif') => {
+    if (!socket || !activeRoom) {
       console.log('Cannot send message:', {
-        messageEmpty: !newMessage.trim(),
         socketExists: !!socket,
         activeRoomExists: !!activeRoom,
         activeRoomId: activeRoom?.id
@@ -177,17 +176,17 @@ export default function ChatPage() {
     }
 
     console.log('Sending message:', {
-      content: newMessage,
+      content,
+      type,
       chatRoomId: activeRoom.id
     });
 
     try {
       socket.emit('send_message', {
-        content: newMessage,
+        content,
+        type,
         chatRoomId: activeRoom.id,
       });
-
-      setNewMessage('');
     } catch (error) {
       console.error('Error sending message:', error);
     }
@@ -328,7 +327,15 @@ export default function ChatPage() {
                           {message.sender.username}
                         </span>
                       </div>
-                      <p className="mt-1">{message.content}</p>
+                      {message.type === 'gif' ? (
+                        <img
+                          src={message.content}
+                          alt="GIF"
+                          className="mt-1 max-w-full rounded"
+                        />
+                      ) : (
+                        <p className="mt-1">{message.content}</p>
+                      )}
                       <span className="mt-1 block text-xs opacity-70">
                         {new Date(message.timestamp).toLocaleTimeString()}
                       </span>
@@ -340,16 +347,10 @@ export default function ChatPage() {
             </ScrollArea>
 
             {/* Message input */}
-            <form onSubmit={handleSendMessage} className="border-t p-4">
-              <div className="flex gap-2">
-                <Input
-                  value={newMessage}
-                  onChange={(e) => setNewMessage(e.target.value)}
-                  placeholder="Type a message..."
-                />
-                <Button type="submit">Send</Button>
-              </div>
-            </form>
+            <MessageInput
+              onSendMessage={handleSendMessage}
+              disabled={!socket || !activeRoom}
+            />
           </>
         ) : (
           <div className="flex h-full items-center justify-center">

@@ -3,6 +3,7 @@ import mongoose, { Document, Schema } from 'mongoose';
 export interface IMessage extends Document {
     sender: mongoose.Types.ObjectId;
     content: string;
+    type: 'text' | 'gif';
     chatRoom: mongoose.Types.ObjectId;
     readBy: mongoose.Types.ObjectId[];
     attachments?: string[];
@@ -18,6 +19,11 @@ const messageSchema = new Schema<IMessage>({
         type: String,
         required: true,
         trim: true,
+    },
+    type: {
+        type: String,
+        enum: ['text', 'gif'],
+        default: 'text',
     },
     chatRoom: {
         type: Schema.Types.ObjectId,

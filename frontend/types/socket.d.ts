@@ -4,8 +4,8 @@ export interface User {
     _id: string;
     username: string;
     avatar?: string;
-    isOnline: boolean;
-    lastSeen: string;
+    isOnline?: boolean;
+    lastSeen?: string;
 }
 
 declare module 'socket.io-client' {
@@ -19,11 +19,8 @@ declare module 'socket.io-client' {
 export interface Message {
     id: string;
     content: string;
-    sender: {
-        _id: string;
-        username: string;
-        avatar?: string;
-    };
+    type: 'text' | 'gif';
+    sender: User;
     timestamp: string;
 }
 

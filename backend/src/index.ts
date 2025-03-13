@@ -29,6 +29,7 @@ const io = new Server(httpServer, {
 // Message validation schema
 const messageSchema = z.object({
     content: z.string().min(1),
+    type: z.enum(['text', 'gif']).default('text'),
     chatRoomId: z.string(),
 });
 
@@ -92,15 +93,16 @@ io.on('connection', (socket) => {
         try {
             // Validate message data
             const validatedData = messageSchema.parse(data);
-            const { content, chatRoomId } = validatedData;
+            const { content, type, chatRoomId } = validatedData;
 
             // Save message to database
             const message = await Message.create({
                 content,
+                type,
                 sender: socket.data.user._id,
                 chatRoom: chatRoomId,
                 readBy: [socket.data.user._id],
-            });
+            }) as any;
 
             // Update last message in chat room
             await ChatRoom.findByIdAndUpdate(chatRoomId, {
@@ -111,6 +113,7 @@ io.on('connection', (socket) => {
             io.to(chatRoomId).emit('receive_message', {
                 id: message._id,
                 content: message.content,
+                type: message.type,
                 sender: {
                     _id: socket.data.user._id,
                     username: socket.data.user.username,
@@ -123,6 +126,7 @@ io.on('connection', (socket) => {
             socket.emit('message_sent', {
                 id: message._id,
                 content: message.content,
+                type: message.type,
                 sender: {
                     _id: socket.data.user._id,
                     username: socket.data.user.username,
@@ -131,15 +135,8 @@ io.on('connection', (socket) => {
                 timestamp: message.createdAt.toISOString(),
             });
         } catch (error) {
-            if (error instanceof z.ZodError) {
-                socket.emit('error', {
-                    message: 'Invalid message data',
-                    errors: error.errors
-                });
-                return;
-            }
             console.error('Error sending message:', error);
-            socket.emit('error', { message: 'Error sending message' });
+            socket.emit('message_error', { message: 'Error sending message' });
         }
     });
 
