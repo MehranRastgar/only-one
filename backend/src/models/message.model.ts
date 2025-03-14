@@ -2,6 +2,8 @@ import mongoose, { Schema, Document } from 'mongoose';
 
 export interface IMessage extends Document {
     content: string;
+    type: 'text' | 'gif' | 'image';
+    imageUrl?: string;
     sender: mongoose.Types.ObjectId;
     chatRoom: mongoose.Types.ObjectId;
     readBy: mongoose.Types.ObjectId[];
@@ -14,6 +16,17 @@ const messageSchema = new Schema<IMessage>({
         type: String,
         required: true,
         trim: true,
+    },
+    type: {
+        type: String,
+        enum: ['text', 'gif', 'image'],
+        default: 'text',
+    },
+    imageUrl: {
+        type: String,
+        required: function (this: IMessage) {
+            return this.type === 'image';
+        }
     },
     sender: {
         type: Schema.Types.ObjectId,

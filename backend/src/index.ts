@@ -4,12 +4,16 @@ import { Server } from 'socket.io';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import mongoose from 'mongoose';
+import path from 'path';
 import authRoutes from './routes/auth.routes';
 import chatRoutes from './routes/chat.routes';
 import userRoutes from './routes/user.routes';
+import uploadRoutes from './routes/upload.routes';
+import imageRoutes from './routes/image.routes';
 import jwt from 'jsonwebtoken';
 import { User, ChatRoom, Message } from './models';
 import { z } from 'zod';
+import fs from 'fs';
 
 // Load environment variables
 dotenv.config();
@@ -29,8 +33,17 @@ const io = new Server(httpServer, {
 // Message validation schema
 const messageSchema = z.object({
     content: z.string().min(1),
-    type: z.enum(['text', 'gif']).default('text'),
+    type: z.enum(['text', 'gif', 'image']).default('text'),
+    imageUrl: z.string().optional(),
     chatRoomId: z.string(),
+}).refine((data) => {
+    if (data.type === 'image') {
+        return !!data.imageUrl;
+    }
+    return true;
+}, {
+    message: "imageUrl is required when type is 'image'",
+    path: ["imageUrl"],
 });
 
 // Middleware
@@ -42,6 +55,12 @@ app.use(cors({
 }));
 app.use(express.json());
 
+// Create uploads directory if it doesn't exist
+const uploadsDir = path.join(__dirname, '../uploads');
+if (!fs.existsSync(uploadsDir)) {
+    fs.mkdirSync(uploadsDir);
+}
+
 // Database connection
 mongoose.connect(process.env.MONGODB_URI!)
     .then(() => console.log('Connected to MongoDB'))
@@ -51,6 +70,8 @@ mongoose.connect(process.env.MONGODB_URI!)
 app.use('/api/auth', authRoutes);
 app.use('/api/chat', chatRoutes);
 app.use('/api/users', userRoutes);
+app.use('/api/upload', uploadRoutes);
+app.use('/api/images', imageRoutes);
 
 // Basic route
 app.get('/', (_req, res) => {
@@ -93,16 +114,21 @@ io.on('connection', (socket) => {
         try {
             // Validate message data
             const validatedData = messageSchema.parse(data);
-            const { content, type, chatRoomId } = validatedData;
+            const { content, type, chatRoomId, imageUrl } = validatedData;
+
+            console.log('Received message data:', validatedData);
 
             // Save message to database
             const message = await Message.create({
                 content,
                 type,
+                imageUrl: type === 'image' ? imageUrl : undefined,
                 sender: socket.data.user._id,
                 chatRoom: chatRoomId,
                 readBy: [socket.data.user._id],
             }) as any;
+
+            console.log('Created message:', message);
 
             // Update last message in chat room
             await ChatRoom.findByIdAndUpdate(chatRoomId, {
@@ -110,30 +136,24 @@ io.on('connection', (socket) => {
             });
 
             // Emit message to room
-            io.to(chatRoomId).emit('receive_message', {
+            const messageToEmit = {
                 id: message._id,
                 content: message.content,
                 type: message.type,
+                imageUrl: message.imageUrl,
                 sender: {
                     _id: socket.data.user._id,
                     username: socket.data.user.username,
                     avatar: socket.data.user.avatar,
                 },
                 timestamp: message.createdAt.toISOString(),
-            });
+            };
+
+            console.log('Emitting message:', messageToEmit);
+            io.to(chatRoomId).emit('receive_message', messageToEmit);
 
             // Also emit to sender for confirmation
-            socket.emit('message_sent', {
-                id: message._id,
-                content: message.content,
-                type: message.type,
-                sender: {
-                    _id: socket.data.user._id,
-                    username: socket.data.user.username,
-                    avatar: socket.data.user.avatar,
-                },
-                timestamp: message.createdAt.toISOString(),
-            });
+            socket.emit('message_sent', messageToEmit);
         } catch (error) {
             console.error('Error sending message:', error);
             socket.emit('message_error', { message: 'Error sending message' });

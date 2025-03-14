@@ -64,6 +64,10 @@ export default function ChatPage() {
 
       newSocket.on('receive_message', (message: Message) => {
         console.log('Received message:', message);
+        console.log('Message type:', message.type);
+        console.log('Image URL:', message.imageUrl);
+        console.log('Full message data:', JSON.stringify(message, null, 2));
+        
         setMessages((prev) => {
           // Check if message already exists
           const messageExists = prev.some(m => m.id === message.id);
@@ -71,8 +75,13 @@ export default function ChatPage() {
             console.log('Message already exists, skipping:', message.id);
             return prev;
           }
+          console.log('Adding new message to chat:', message);
           return [...prev, message];
         });
+      });
+
+      newSocket.on('message_sent', (message: Message) => {
+        console.log('Message sent successfully:', message);
       });
 
       newSocket.on('message_error', (error: { message: string }) => {
@@ -165,7 +174,7 @@ export default function ChatPage() {
     }
   };
 
-  const handleSendMessage = (content: string, type: 'text' | 'gif') => {
+  const handleSendMessage = (content: string, type: 'text' | 'gif' | 'image', imageUrl?: string) => {
     if (!socket || !activeRoom) {
       console.log('Cannot send message:', {
         socketExists: !!socket,
@@ -178,6 +187,7 @@ export default function ChatPage() {
     console.log('Sending message:', {
       content,
       type,
+      imageUrl,
       chatRoomId: activeRoom.id
     });
 
@@ -185,6 +195,7 @@ export default function ChatPage() {
       socket.emit('send_message', {
         content,
         type,
+        imageUrl,
         chatRoomId: activeRoom.id,
       });
     } catch (error) {
@@ -333,6 +344,32 @@ export default function ChatPage() {
                           alt="GIF"
                           className="mt-1 max-w-full rounded"
                         />
+                      ) : message.type === 'image' ? (
+                        <div className="mt-1">
+                          <div className="relative">
+                            <img
+                              src={`${process.env.NEXT_PUBLIC_API_URL}/api/images/${message.imageUrl?.split('/').pop()}`}
+                              alt="Image message"
+                              className="mt-1 max-w-full rounded-lg object-contain"
+                              onError={(e) => {
+                                const img = e.target as HTMLImageElement;
+                                console.error('Error loading image:', e);
+                                console.error('Failed image URL:', message.imageUrl);
+                                img.style.display = 'none';
+                                if (img.parentElement) {
+                                  const fallback = document.createElement('p');
+                                  fallback.textContent = 'Image failed to load';
+                                  fallback.className = 'text-sm text-red-500';
+                                  img.parentElement.appendChild(fallback);
+                                }
+                              }}
+                            />
+                            {/* Optional caption */}
+                            {message.content && !message.content.startsWith('[Image:') && (
+                              <p className="mt-2 text-sm text-foreground/80">{message.content}</p>
+                            )}
+                          </div>
+                        </div>
                       ) : (
                         <p className="mt-1">{message.content}</p>
                       )}
@@ -362,4 +399,4 @@ export default function ChatPage() {
       </div>
     </div>
   );
-} 
+}

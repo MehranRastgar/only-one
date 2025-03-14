@@ -19,7 +19,8 @@ declare module 'socket.io-client' {
 export interface Message {
     id: string;
     content: string;
-    type: 'text' | 'gif';
+    type: 'text' | 'gif' | 'image';
+    imageUrl?: string;
     sender: User;
     timestamp: string;
 }
