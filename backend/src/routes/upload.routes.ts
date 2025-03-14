@@ -1,9 +1,9 @@
 import express from 'express';
-import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
 import { v4 as uuidv4 } from 'uuid';
 import { authMiddleware } from '../middleware/auth.middleware';
+import { UploadedFile } from 'express-fileupload';
 
 const router = express.Router();
 
@@ -13,51 +13,41 @@ if (!fs.existsSync(uploadsDir)) {
     fs.mkdirSync(uploadsDir, { recursive: true });
 }
 
-// Configure multer for file upload
-const storage = multer.diskStorage({
-    destination: (_req, _file, cb) => {
-        cb(null, uploadsDir);
-    },
-    filename: (_req, file, cb) => {
-        const uniqueName = `${uuidv4()}${path.extname(file.originalname)}`;
-        cb(null, uniqueName);
-    }
-});
-
-const upload = multer({
-    storage,
-    limits: {
-        fileSize: 5 * 1024 * 1024, // 5MB limit
-    },
-    fileFilter: (_req, file, cb) => {
-        const allowedTypes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
-        if (allowedTypes.includes(file.mimetype)) {
-            cb(null, true);
-        } else {
-            cb(new Error('Invalid file type. Only JPEG, PNG, GIF, and WebP images are allowed.'));
-        }
-    }
-});
-
-router.post('/', authMiddleware, upload.single('image'), async (req: express.Request, res: express.Response) => {
+router.post('/', authMiddleware, async (req: express.Request, res: express.Response) => {
     try {
-        if (!req.file) {
+        if (!req.files?.image || Array.isArray(req.files.image)) {
             return res.status(400).json({ message: 'No file uploaded' });
         }
 
-        console.log('Uploaded file:', {
-            filename: req.file.filename,
-            originalname: req.file.originalname,
-            mimetype: req.file.mimetype,
-            size: req.file.size
+        const file = req.files.image as UploadedFile;
+        const allowedTypes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+
+        if (!allowedTypes.includes(file.mimetype)) {
+            return res.status(400).json({
+                message: 'Invalid file type. Only JPEG, PNG, GIF, and WebP images are allowed.'
+            });
+        }
+
+        if (file.size > 5 * 1024 * 1024) { // 5MB limit
+            return res.status(400).json({ message: 'File size exceeds 5MB limit' });
+        }
+
+        // Generate unique filename
+        const fileExtension = path.extname(file.name);
+        const fileName = `${uuidv4()}${fileExtension}`;
+        const filePath = path.join(uploadsDir, fileName);
+
+        console.log('Uploading file:', {
+            originalname: file.name,
+            mimetype: file.mimetype,
+            size: file.size,
+            destination: filePath
         });
 
-        // Construct the image URL using the new image route
-        const imageUrl = `${process.env.API_URL}/api/images/${req.file.filename}`;
-        console.log('Generated image URL:', imageUrl);
+        // Move the file
+        await file.mv(filePath);
 
         // Verify file exists
-        const filePath = path.join(uploadsDir, req.file.filename);
         const fileExists = fs.existsSync(filePath);
         console.log('File exists:', fileExists);
 
@@ -65,15 +55,16 @@ router.post('/', authMiddleware, upload.single('image'), async (req: express.Req
             return res.status(500).json({ message: 'File was not saved correctly' });
         }
 
+        // Construct the image URL
+        const imageUrl = `/api/images/${fileName}`;
+        console.log('Generated image URL:', imageUrl);
+
         return res.json({
             message: 'File uploaded successfully',
             imageUrl
         });
     } catch (error) {
         console.error('Upload error:', error);
-        if (error instanceof multer.MulterError) {
-            return res.status(400).json({ message: error.message });
-        }
         return res.status(500).json({ message: 'Error uploading file' });
     }
 });

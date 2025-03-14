@@ -33,7 +33,7 @@ export function UserList({ users, currentUserId, onSelectUser, selectedUserId }:
             )}
           >
             <Avatar>
-              <AvatarImage src={user.avatar} />
+              <AvatarImage src={`${process.env.NEXT_PUBLIC_API_URL}/api/images/${user.avatar}`} />
               <AvatarFallback>
                 {user.username.charAt(0).toUpperCase()}
               </AvatarFallback>

@@ -13,17 +13,18 @@ import { Loader2 } from 'lucide-react';
 import type { Message, ChatRoom, User } from '@/types/socket';
 import { MessageInput } from '@/components/message-input';
 
+interface OptimisticMessage extends Message {
+  pending?: boolean;
+}
+
 export default function ChatPage() {
   const { data: session, status } = useSession();
   const router = useRouter();
-  const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
-  const [newMessage, setNewMessage] = useState('');
   const [isLoading, setIsLoading] = useState(true);
   const [socket, setSocket] = useState<Socket | null>(null);
   const [activeRoom, setActiveRoom] = useState<ChatRoom | null>(null);
-  const [rooms, setRooms] = useState<ChatRoom[]>([]);
-  const [users, setUsers] = useState<User[]>([]);
+  const [partner, setPartner] = useState<User | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // Add session logging
@@ -31,98 +32,6 @@ export default function ChatPage() {
     console.log('Session status:', status);
     console.log('Session data:', session);
   }, [status, session]);
-
-  useEffect(() => {
-    if (status === 'unauthenticated') {
-      router.push('/auth/login');
-      return;
-    }
-
-    if (status === 'authenticated' && session?.user?.token) {
-      console.log('Connecting to chat server...');
-      console.log('User token:', session.user.token);
-      console.log('User ID:', session.user.id);
-      
-      const newSocket = io(process.env.NEXT_PUBLIC_API_URL!, {
-        auth: {
-          token: session.user.token,
-        },
-      });
-
-      newSocket.on('connect', () => {
-        console.log('Connected to chat server');
-        setIsLoading(false);
-        // Fetch users when connected
-        console.log('Fetching users after socket connection...');
-        fetchUsers();
-      });
-
-      newSocket.on('connect_error', (error: Error) => {
-        console.error('Connection error:', error);
-        setIsLoading(false);
-      });
-
-      newSocket.on('receive_message', (message: Message) => {
-        console.log('Received message:', message);
-        console.log('Message type:', message.type);
-        console.log('Image URL:', message.imageUrl);
-        console.log('Full message data:', JSON.stringify(message, null, 2));
-        
-        setMessages((prev) => {
-          // Check if message already exists
-          const messageExists = prev.some(m => m.id === message.id);
-          if (messageExists) {
-            console.log('Message already exists, skipping:', message.id);
-            return prev;
-          }
-          console.log('Adding new message to chat:', message);
-          return [...prev, message];
-        });
-      });
-
-      newSocket.on('message_sent', (message: Message) => {
-        console.log('Message sent successfully:', message);
-      });
-
-      newSocket.on('message_error', (error: { message: string }) => {
-        console.error('Error sending message:', error);
-      });
-
-      newSocket.on('chat_rooms', (rooms: ChatRoom[]) => {
-        console.log('Received chat rooms:', rooms);
-        setRooms(rooms);
-      });
-
-      newSocket.on('users', (users: User[]) => {
-        console.log('Received users:', users);
-        setUsers(users);
-      });
-
-      setSocket(newSocket);
-
-      return () => {
-        newSocket.close();
-      };
-    }
-  }, [status, session, router]);
-
-  useEffect(() => {
-    if (socket && activeRoom) {
-      console.log('Joining room:', activeRoom.id);
-      socket.emit('join_room', activeRoom.id);
-      // Fetch messages for the active room
-      fetchMessages(activeRoom.id);
-
-      return () => {
-        console.log('Leaving room:', activeRoom.id);
-        socket.emit('leave_room', activeRoom.id);
-      };
-    }
-  }, [socket, activeRoom]);
-
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
 
   const fetchMessages = async (roomId: string) => {
     try {
@@ -146,165 +55,258 @@ export default function ChatPage() {
     }
   };
 
-  const fetchUsers = async () => {
-    try {
-      console.log('Fetching users from API...');
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/users`, {
-        headers: {
-          Authorization: `Bearer ${session?.user?.token}`,
+  // Socket connection effect
+  useEffect(() => {
+    if (status === 'authenticated' && session?.user?.token) {
+      console.log('Connecting to chat server...');
+      
+      const newSocket = io(process.env.NEXT_PUBLIC_API_URL!, {
+        auth: {
+          token: session.user.token,
         },
       });
 
-      console.log('Users API Response status:', response.status);
+      newSocket.on('connect', () => {
+        console.log('Connected to chat server');
+        setIsLoading(false);
+        fetchPartnerAndRoom();
+      });
+
+      newSocket.on('connect_error', (error: Error) => {
+        console.error('Connection error:', error);
+        setIsLoading(false);
+      });
+
+      setSocket(newSocket);
+
+      return () => {
+        newSocket.close();
+      };
+    }
+  }, [status, session]);
+
+  // Room joining effect
+  useEffect(() => {
+    if (socket && activeRoom) {
+      // Join the room
+      socket.emit('join_room', activeRoom.id);
+      
+      // Set up message handlers
+      const handleReceiveMessage = (message: Message) => {
+        console.log('Received message:', message);
+        setMessages((prevMessages) => {
+          // Don't add messages from the current user (handled by optimistic updates)
+          if (message.sender._id === session?.user?.id) {
+            return prevMessages;
+          }
+          
+          // Don't add duplicate messages
+          if (prevMessages.some(m => m.id === message.id)) {
+            return prevMessages;
+          }
+          
+          // Add new message and sort by timestamp
+          return [...prevMessages, message].sort((a, b) => 
+            new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+          );
+        });
+      };
+
+      socket.on('receive_message', handleReceiveMessage);
+
+      // Fetch existing messages
+      fetchMessages(activeRoom.id);
+
+      return () => {
+        socket.off('receive_message', handleReceiveMessage);
+        socket.emit('leave_room', activeRoom.id);
+      };
+    }
+  }, [socket, activeRoom, session?.user?.id]);
+
+  const fetchPartnerAndRoom = async () => {
+    try {
+      // Fetch user's partner information
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/users/partner`, {
+        headers: {
+          Authorization: `Bearer ${session?.user?.token}`
+        },
+      });
 
       if (!response.ok) {
-        throw new Error('Failed to fetch users');
+        if (response.status === 404) {
+          // No partner found, redirect to partner code entry page
+          router.push('/partner-code');
+          return;
+        }
+        if (response.status === 400) {
+          const data = await response.json();
+          console.error('Partner error:', data.message);
+          // Handle "already has partner" case
+          if (data.message.includes('already have a partner')) {
+            router.push('/partner-code');
+            return;
+          }
+        }
+        throw new Error('Failed to fetch partner information');
       }
 
-      const data = await response.json();
-      console.log('Received users data:', data);
-      
-      // Filter out the current user
-      const otherUsers = data.filter((user: User) => user._id !== session?.user?.id);
-      console.log('Filtered users:', otherUsers);
-      
-      setUsers(otherUsers);
-    } catch (error) {
-      console.error('Error fetching users:', error);
-    }
-  };
+      const partnerData = await response.json();
+      console.log('Partner data:', partnerData);
+      setPartner(partnerData);
 
-  const handleSendMessage = (content: string, type: 'text' | 'gif' | 'image', imageUrl?: string) => {
-    if (!socket || !activeRoom) {
-      console.log('Cannot send message:', {
-        socketExists: !!socket,
-        activeRoomExists: !!activeRoom,
-        activeRoomId: activeRoom?.id
-      });
-      return;
-    }
-
-    console.log('Sending message:', {
-      content,
-      type,
-      imageUrl,
-      chatRoomId: activeRoom.id
-    });
-
-    try {
-      socket.emit('send_message', {
-        content,
-        type,
-        imageUrl,
-        chatRoomId: activeRoom.id,
-      });
-    } catch (error) {
-      console.error('Error sending message:', error);
-    }
-  };
-
-  const handleSelectUser = async (userId: string) => {
-    if (status !== 'authenticated' || !session?.user?.token) {
-      console.error('Not authenticated or missing session token');
-      router.push('/auth/login');
-      return;
-    }
-
-    console.log('handleSelectUser called with userId:', userId);
-    console.log('Current session:', session);
-    console.log('User token:', session.user.token);
-    console.log('User ID:', session.user.id);
-
-    try {
-      // Ensure userId is a valid MongoDB ObjectId
-      if (!/^[0-9a-fA-F]{24}$/.test(userId)) {
-        console.error('Invalid user ID format');
-        return;
-      }
-
-      setSelectedUserId(userId);
-      console.log('Making API request to create/get direct message room...');
-      
-      const response = await fetch(
-        `${process.env.NEXT_PUBLIC_API_URL}/api/chat/direct/${userId}`,
+      // Fetch or create chat room with partner
+      const roomResponse = await fetch(
+        `${process.env.NEXT_PUBLIC_API_URL}/api/chat/direct/${partnerData._id}`,
         {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            Authorization: `Bearer ${session.user.token}`,
+            Authorization: `Bearer ${session?.user?.token}`
           },
         }
       );
 
-      console.log('API Response status:', response.status);
-      
-      if (!response.ok) {
-        const error = await response.json();
-        console.error('API Error:', error);
-        throw new Error(error.message || 'Failed to create direct message room');
+      if (!roomResponse.ok) {
+        throw new Error('Failed to fetch chat room');
       }
 
-      const room = await response.json();
-      console.log('Received room:', room);
-      
-      // Check if room already exists in rooms array
-      const existingRoom = rooms.find(r => r.id === room.id);
-      if (!existingRoom) {
-        setRooms(prev => [...prev, room]);
+      const room = await roomResponse.json();
+      console.log('Chat room data:', room);
+
+      // Ensure room has participants
+      if (!room.participants || room.participants.length < 2) {
+        console.error('Chat room missing participants');
+        throw new Error('Invalid chat room configuration');
       }
 
-      // Set active room and ensure it has an ID
-      if (room.id) {
-        console.log('Setting active room:', room);
-        setActiveRoom(room);
-      } else {
-        console.error('Received room without ID:', room);
-        throw new Error('Invalid room data received');
-      }
+      // Set active room with participants
+      setActiveRoom(room);
+
+      // Fetch messages for the room
+      fetchMessages(room.id);
     } catch (error) {
-      console.error('Error creating direct message room:', error);
+      console.error('Error fetching partner and room:', error);
+      // If there's an error, redirect to partner code page
+      router.push('/partner-code');
+    }
+  };
+
+  // Add scroll to bottom effect
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
+
+  const handleSendMessage = (content: string, type: 'text' | 'gif' | 'image', imageUrl?: string) => {
+    if (!socket || !activeRoom || !session?.user?.id) {
+      console.log('Cannot send message: Missing required data');
+      return;
+    }
+
+    const messageData = {
+      content,
+      type,
+      imageUrl,
+      chatRoomId: activeRoom.id,
+      timestamp: new Date().toISOString(),
+      sender: {
+        _id: session.user.id,
+        username: session.user.name || 'Unknown',
+        avatar: session.user.image || undefined,
+      }
+    };
+
+    try {
+      // Create optimistic message with temporary ID
+      const optimisticMessage = {
+        id: `temp-${Date.now()}`,
+        ...messageData,
+        pending: true
+      };
+      
+      // Add optimistic message to UI
+      setMessages(prev => [...prev, optimisticMessage]);
+
+      // Emit the message through socket with callback
+      socket.emit('send_message', messageData, (error: any, confirmedMessage: Message) => {
+        if (error) {
+          console.error('Error sending message:', error);
+          // Remove the optimistic message if there's an error
+          setMessages(prev => prev.filter(msg => msg.id !== optimisticMessage.id));
+          return;
+        }
+
+        // Replace optimistic message with confirmed message
+        setMessages(prev => prev.map(msg => 
+          msg.id === optimisticMessage.id ? { ...confirmedMessage, pending: false } : msg
+        ));
+      });
+    } catch (error) {
+      console.error('Error in message handling:', error);
+      // Remove optimistic message if there's an error
+      setMessages(prev => prev.filter(msg => msg.id !== `temp-${Date.now()}`));
     }
   };
 
   if (status === 'loading' || isLoading) {
     return (
-      <div className="flex h-screen items-center justify-center">
-        <Loader2 className="h-8 w-8 animate-spin" />
+      <div className="flex min-h-screen items-center justify-center bg-gray-50 dark:bg-gray-900">
+        <div className="h-[100vh] w-full sm:h-[600px] sm:w-[400px] bg-background flex items-center justify-center rounded-lg shadow-xl">
+          <Loader2 className="h-8 w-8 animate-spin" />
+        </div>
       </div>
     );
   }
 
-  return (
-    <div className="flex h-screen">
-      {/* Sidebar with user list */}
-      <div className="w-80 border-r p-4">
-        <UserList 
-          users={users}
-          currentUserId={session?.user?.id || ''}
-          onSelectUser={handleSelectUser}
-          selectedUserId={selectedUserId || undefined}
-        />
-      </div>
+  if (status === 'unauthenticated') {
+    router.push('/auth/login');
+    return null;
+  }
 
-      {/* Chat area */}
-      <div className="flex flex-1 flex-col">
-        {activeRoom ? (
+  return (
+    <div className="flex min-h-screen items-center justify-center bg-gray-50 dark:bg-gray-900">
+      <div className="h-[100vh] w-full sm:h-[600px] sm:w-[400px] bg-background flex flex-col overflow-hidden rounded-lg shadow-xl">
+        {activeRoom && partner ? (
           <>
             {/* Chat header */}
             <div className="border-b p-4">
-              <div className="flex items-center gap-3">
-                <Avatar>
-                  <AvatarImage src={activeRoom.participants[0]?.avatar} />
-                  <AvatarFallback>
-                    {activeRoom.participants[0]?.username.charAt(0).toUpperCase()}
-                  </AvatarFallback>
-                </Avatar>
-                <div>
-                  <h2 className="font-semibold">{activeRoom.name}</h2>
-                  <p className="text-sm text-muted-foreground">
-                    {activeRoom.participants.length} participants
-                  </p>
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <Avatar>
+                  <AvatarImage src={`${process.env.NEXT_PUBLIC_API_URL}/api/images/${partner.avatar}`} />
+                    <AvatarFallback>
+                      {partner.username.charAt(0).toUpperCase()}
+                    </AvatarFallback>
+                  </Avatar>
+                  <div>
+                    <h2 className="font-semibold">{partner.username}</h2>
+                    <p className="text-sm text-muted-foreground">
+                      {partner.isOnline ? 'Online' : 'Offline'}
+                    </p>
+                  </div>
                 </div>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  onClick={() => router.push('/settings')}
+                >
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    width="24"
+                    height="24"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    className="h-5 w-5"
+                  >
+                    <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" />
+                    <circle cx="12" cy="12" r="3" />
+                  </svg>
+                  <span className="sr-only">Settings</span>
+                </Button>
               </div>
             </div>
 
@@ -327,17 +329,6 @@ export default function ChatPage() {
                           : 'bg-muted'
                       }`}
                     >
-                      <div className="flex items-center gap-2">
-                        <Avatar className="h-6 w-6">
-                          <AvatarImage src={message.sender.avatar} />
-                          <AvatarFallback>
-                            {message.sender.username.charAt(0).toUpperCase()}
-                          </AvatarFallback>
-                        </Avatar>
-                        <span className="text-sm font-medium">
-                          {message.sender.username}
-                        </span>
-                      </div>
                       {message.type === 'gif' ? (
                         <img
                           src={message.content}
@@ -354,7 +345,6 @@ export default function ChatPage() {
                               onError={(e) => {
                                 const img = e.target as HTMLImageElement;
                                 console.error('Error loading image:', e);
-                                console.error('Failed image URL:', message.imageUrl);
                                 img.style.display = 'none';
                                 if (img.parentElement) {
                                   const fallback = document.createElement('p');
@@ -390,10 +380,16 @@ export default function ChatPage() {
             />
           </>
         ) : (
-          <div className="flex h-full items-center justify-center">
-            <p className="text-muted-foreground">
-              Select a user to start messaging
+          <div className="flex h-full flex-col items-center justify-center p-4 text-center">
+            <p className="text-lg font-semibold text-muted-foreground mb-4">
+              No Partner Connected
             </p>
+            <p className="text-sm text-muted-foreground mb-6">
+              To start messaging, you need to connect with your partner using their unique code.
+            </p>
+            <Button onClick={() => router.push('/partner-code')}>
+              Enter Partner Code
+            </Button>
           </div>
         )}
       </div>

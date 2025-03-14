@@ -1,5 +1,6 @@
 import mongoose, { Schema, Document } from 'mongoose';
 import bcrypt from 'bcryptjs';
+import crypto from 'crypto';
 
 export interface IUser extends Document {
     username: string;
@@ -9,7 +10,9 @@ export interface IUser extends Document {
     isOnline: boolean;
     lastSeen: Date;
     chatRooms: mongoose.Types.ObjectId[];
+    partnerCode?: string | null;
     comparePassword(candidatePassword: string): Promise<boolean>;
+    generatePartnerCode(): string;
 }
 
 const userSchema = new Schema<IUser>({
@@ -48,6 +51,12 @@ const userSchema = new Schema<IUser>({
         type: Schema.Types.ObjectId,
         ref: 'ChatRoom',
     }],
+    partnerCode: {
+        type: String,
+        unique: true,
+        sparse: true,
+        default: null,
+    }
 }, {
     timestamps: true,
 });
@@ -73,5 +82,18 @@ userSchema.methods.comparePassword = async function (candidatePassword: string):
         throw error;
     }
 };
+
+// Generate partner code method
+userSchema.methods.generatePartnerCode = function (): string {
+    // Generate a random 8-character code
+    const code = crypto.randomBytes(4).toString('hex').toUpperCase();
+    this.partnerCode = code;
+    return code;
+};
+
+// Indexes
+userSchema.index({ username: 1 });
+userSchema.index({ email: 1 });
+userSchema.index({ partnerCode: 1 });
 
 export default mongoose.model<IUser>('User', userSchema); 

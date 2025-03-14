@@ -14,6 +14,7 @@ import jwt from 'jsonwebtoken';
 import { User, ChatRoom, Message } from './models';
 import { z } from 'zod';
 import fs from 'fs';
+import fileUpload from 'express-fileupload';
 
 // Load environment variables
 dotenv.config();
@@ -53,7 +54,18 @@ app.use(cors({
         : ['http://localhost:3000', 'http://127.0.0.1:3000'],
     credentials: true
 }));
+
+// Configure express-fileupload
+app.use(fileUpload({
+    useTempFiles: true,
+    tempFileDir: path.join(__dirname, '../uploads/temp'),
+    limits: { fileSize: 5 * 1024 * 1024 }, // 5MB limit
+    abortOnLimit: true,
+    debug: true // Enable debug mode to see what's happening
+}));
+
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
 // Create uploads directory if it doesn't exist
 const uploadsDir = path.join(__dirname, '../uploads');
@@ -110,13 +122,23 @@ io.on('connection', (socket) => {
     });
 
     // Handle chat messages
-    socket.on('send_message', async (data) => {
+    socket.on('send_message', async (data, callback) => {
         try {
             // Validate message data
             const validatedData = messageSchema.parse(data);
             const { content, type, chatRoomId, imageUrl } = validatedData;
 
             console.log('Received message data:', validatedData);
+
+            // Check if user is in the chat room
+            const chatRoom = await ChatRoom.findOne({
+                _id: chatRoomId,
+                participants: socket.data.user._id
+            });
+
+            if (!chatRoom) {
+                throw new Error('Chat room not found or user not authorized');
+            }
 
             // Save message to database
             const message = await Message.create({
@@ -133,6 +155,7 @@ io.on('connection', (socket) => {
             // Update last message in chat room
             await ChatRoom.findByIdAndUpdate(chatRoomId, {
                 lastMessage: message._id,
+                updatedAt: new Date()
             });
 
             // Emit message to room
@@ -147,16 +170,25 @@ io.on('connection', (socket) => {
                     avatar: socket.data.user.avatar,
                 },
                 timestamp: message.createdAt.toISOString(),
+                chatRoomId: message.chatRoom
             };
 
             console.log('Emitting message:', messageToEmit);
-            io.to(chatRoomId).emit('receive_message', messageToEmit);
 
-            // Also emit to sender for confirmation
-            socket.emit('message_sent', messageToEmit);
+            // Emit to all sockets in the room
+            io.in(chatRoomId).emit('receive_message', messageToEmit);
+
+            // Send confirmation to sender
+            if (callback) {
+                callback(null, messageToEmit);
+            }
         } catch (error) {
             console.error('Error sending message:', error);
-            socket.emit('message_error', { message: 'Error sending message' });
+            if (callback) {
+                callback({ message: 'Error sending message' });
+            } else {
+                socket.emit('message_error', { message: 'Error sending message' });
+            }
         }
     });
 

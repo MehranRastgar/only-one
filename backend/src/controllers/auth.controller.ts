@@ -111,9 +111,24 @@ export const authController = {
 
     getProfile: async (req: Request, res: Response): Promise<void> => {
         try {
-            const user = await User.findById(req.user._id).select('-password');
-            res.json(user);
+            const user = await User.findById(req.user._id)
+                .select('-password')
+                .lean();
+
+            if (!user) {
+                res.status(404).json({ message: 'User not found' });
+                return;
+            }
+
+            res.json({
+                username: user.username,
+                email: user.email,
+                avatar: user.avatar,
+                isOnline: user.isOnline,
+                lastSeen: user.lastSeen
+            });
         } catch (error) {
+            console.error('Error fetching profile:', error);
             res.status(500).json({ message: 'Error fetching profile' });
         }
     },
@@ -121,31 +136,50 @@ export const authController = {
     updateProfile: async (req: Request, res: Response): Promise<void> => {
         try {
             const { username, email, avatar } = req.body;
+            const updates: { [key: string]: any } = {};
+
+            if (username) updates.username = username;
+            if (email) updates.email = email;
+            if (avatar) updates.avatar = avatar;
 
             // Check if username or email is already taken
-            const existingUser = await User.findOne({
-                $or: [
-                    { email, _id: { $ne: req.user._id } },
-                    { username, _id: { $ne: req.user._id } },
-                ],
-            });
-
-            if (existingUser) {
-                res.status(400).json({
-                    message: 'Username or email already taken',
+            if (username || email) {
+                const existingUser = await User.findOne({
+                    $or: [
+                        ...(email ? [{ email, _id: { $ne: req.user._id } }] : []),
+                        ...(username ? [{ username, _id: { $ne: req.user._id } }] : [])
+                    ],
                 });
-                return;
+
+                if (existingUser) {
+                    res.status(400).json({
+                        message: 'Username or email already taken'
+                    });
+                    return;
+                }
             }
 
             // Update user
             const user = await User.findByIdAndUpdate(
                 req.user._id,
-                { username, email, avatar },
+                updates,
                 { new: true, select: '-password' }
-            );
+            ).lean();
 
-            res.json(user);
+            if (!user) {
+                res.status(404).json({ message: 'User not found' });
+                return;
+            }
+
+            res.json({
+                username: user.username,
+                email: user.email,
+                avatar: user.avatar,
+                isOnline: user.isOnline,
+                lastSeen: user.lastSeen
+            });
         } catch (error) {
+            console.error('Error updating profile:', error);
             res.status(500).json({ message: 'Error updating profile' });
         }
     }
